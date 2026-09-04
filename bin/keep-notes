@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+VENV="$DATA_HOME/keep-notes/venv"
+PYTHON="$VENV/bin/python"
+MARKER="$VENV/.keep-notes-gkeepapi-version"
+GKEEPAPI_VERSION="0.17.1"
+
+fail_json() {
+  local message="$1"
+  python - "$message" <<'PY'
+import json
+import sys
+print(json.dumps({"ok": False, "error": sys.argv[1]}))
+PY
+  exit 1
+}
+
+command -v python >/dev/null 2>&1 || \
+  fail_json "Python is required to run Keep Notes."
+
+needs_bootstrap=false
+if [[ ! -x "$PYTHON" ]]; then
+  needs_bootstrap=true
+elif [[ ! -f "$MARKER" ]]; then
+  needs_bootstrap=true
+elif [[ "$(<"$MARKER")" != "$GKEEPAPI_VERSION" ]]; then
+  needs_bootstrap=true
+fi
+
+if [[ "$needs_bootstrap" == true ]]; then
+  mkdir -p "$(dirname "$VENV")"
+
+  if [[ ! -x "$PYTHON" ]]; then
+    rm -rf "$VENV"
+    if ! python -m venv "$VENV" >/dev/null 2>&1; then
+      fail_json "Could not create the Keep Notes Python environment."
+    fi
+  fi
+
+  if ! "$PYTHON" -m pip install \
+      --disable-pip-version-check \
+      --quiet \
+      "gkeepapi==$GKEEPAPI_VERSION" >&2; then
+    fail_json "Could not install gkeepapi. Check your internet connection and try again."
+  fi
+
+  printf '%s\n' "$GKEEPAPI_VERSION" > "$MARKER"
+fi
+
+exec "$PYTHON" "$ROOT/lib/keep_notes.py" "$@"

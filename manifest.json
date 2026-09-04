@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.zed.keep-notes",
+  "name": "Keep Notes",
+  "version": "1.0.0",
+  "author": "Azgmohammadd",
+  "description": "Keyboard-first Google Keep notes and TODO panel for Omarchy",
+  "kinds": [
+    "panel"
+  ],
+  "entryPoints": {
+    "panel": "Panel.qml"
+  }
+}
