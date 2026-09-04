@@ -3,10 +3,13 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 VENV="$DATA_HOME/keep-notes/venv"
 PYTHON="$VENV/bin/python"
 MARKER="$VENV/.keep-notes-gkeepapi-version"
 GKEEPAPI_VERSION="0.17.1"
+COMMAND="${1:-}"
 
 fail_json() {
   local message="$1"
@@ -21,12 +24,68 @@ PY
 command -v python >/dev/null 2>&1 || \
   fail_json "Python is required to run Keep Notes."
 
+# `status` is intentionally stdlib-only. The panel calls it before deciding
+# whether to show onboarding or start a Keep sync, so it must never wait for
+# venv creation, pip, networking, or gkeepapi imports.
+if [[ "$COMMAND" == "status" ]]; then
+  KEEP_NOTES_STATE_HOME="$STATE_HOME" KEEP_NOTES_CONFIG_HOME="$CONFIG_HOME" python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+state_home = Path(os.environ["KEEP_NOTES_STATE_HOME"])
+config_home = Path(os.environ["KEEP_NOTES_CONFIG_HOME"])
+credentials_file = state_home / "keep-notes" / "credentials.json"
+config_file = config_home / "keep-notes" / "config.json"
+
+
+def load(path):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+credentials = load(credentials_file)
+config = {"todo_title": "Keep Notes TODO", "max_notes": 250}
+config.update(load(config_file))
+
+if not str(config.get("todo_title", "")).strip() or config.get("todo_title") in {"TODO", "Omarchy Inbox"}:
+    config["todo_title"] = "Keep Notes TODO"
+
+email = str(credentials.get("email", "") or "").strip()
+token = str(credentials.get("master_token", "") or "").strip()
+
+print(json.dumps({
+    "ok": True,
+    "connected": bool(email and token),
+    "email": email,
+    "config": config,
+}, separators=(",", ":")))
+PY
+  exit 0
+fi
+
 needs_bootstrap=false
+
 if [[ ! -x "$PYTHON" ]]; then
   needs_bootstrap=true
-elif [[ ! -f "$MARKER" ]]; then
-  needs_bootstrap=true
-elif [[ "$(<"$MARKER")" != "$GKEEPAPI_VERSION" ]]; then
+elif [[ -f "$MARKER" && "$(<"$MARKER")" == "$GKEEPAPI_VERSION" ]]; then
+  needs_bootstrap=false
+elif "$PYTHON" - "$GKEEPAPI_VERSION" <<'PY' >/dev/null 2>&1
+import sys
+try:
+    import gkeepapi
+except ImportError:
+    raise SystemExit(1)
+raise SystemExit(0 if getattr(gkeepapi, "__version__", "") == sys.argv[1] else 1)
+PY
+then
+  # Reuse an environment created by an earlier/manual Keep Notes install.
+  printf '%s\n' "$GKEEPAPI_VERSION" > "$MARKER"
+  needs_bootstrap=false
+else
   needs_bootstrap=true
 fi
 
@@ -43,6 +102,8 @@ if [[ "$needs_bootstrap" == true ]]; then
   if ! "$PYTHON" -m pip install \
       --disable-pip-version-check \
       --quiet \
+      --timeout 15 \
+      --retries 1 \
       "gkeepapi==$GKEEPAPI_VERSION" >&2; then
     fail_json "Could not install gkeepapi. Check your internet connection and try again."
   fi
